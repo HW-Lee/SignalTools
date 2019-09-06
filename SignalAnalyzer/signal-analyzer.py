@@ -99,8 +99,10 @@ def create_canvas(path, parent):
 
         if canvas and canvas.spectrum:
             pics += 1
-        if canvas and canvas.spectrogram:
-            pics += 1
+
+        if canvas:
+            canvas.fig = fig
+            canvas.axes = {}
 
         if not xlim and canvas:
             xlim = canvas.xlim_stack[-1]
@@ -111,23 +113,35 @@ def create_canvas(path, parent):
 
         t = np.arange(0, sig.shape[1]) / fs
         for idx in range(sig.shape[0]):
-            plt.subplot(sig.shape[0] * pics, 1, idx * pics + 1)
+            ax = plt.subplot(sig.shape[0] * pics, 1, idx * pics + 1)
             plt.plot(t[xmin:xmax], sig[idx, xmin:xmax])
+            if canvas:
+                canvas.axes["signal-{}".format(idx)] = ax
             if xlim:
                 plt.xlim(xlim)
 
             offset = 0
             if canvas and canvas.spectrum:
                 offset += 1
-                plt.subplot(sig.shape[0] * pics, 1, idx * pics + 1 + offset)
+                ax = plt.subplot(sig.shape[0] * pics, 1, idx * pics + 1 + offset)
                 freq_resp = fft(sig[idx, xmin:xmax], 512)
                 freq_resp = freq_resp[:int(len(freq_resp)/2)]
                 freq_resp = np.abs(freq_resp)
                 ff = np.arange(0, len(freq_resp)+1) / (len(freq_resp)+1) * fs/2.
                 ff = ff[:-1]
-                plt.semilogy(ff, freq_resp)
+                if canvas.spectrum_log:
+                    plt.semilogy(ff, freq_resp)
+                else:
+                    plt.plot(ff, freq_resp)
+                canvas.axes["spectrum-{}".format(idx)] = ax
         
         fig.suptitle("fs: {} Hz, duration: {} secs".format(fs, sig.shape[1] * 1. / fs))
+
+    def find_current_axes_name(iax, canvas):
+        for name, ax in ({} if not hasattr(canvas, "axes") else canvas.axes).items():
+            if ax == iax:
+                return name
+        return None
 
     def on_press(event, canvas):
         canvas.tictoc.toc()
@@ -136,8 +150,7 @@ def create_canvas(path, parent):
     def on_move(event, canvas):
         pass
 
-    def on_release(event, canvas):
-        interval = canvas.tictoc.toc()
+    def on_release_on_signal_axes(event, canvas, interval):
         if interval > 150 and canvas.press_xpos != None and event.xdata != None:
             xdiff = canvas.press_xpos - event.xdata
             xlim = canvas.xlim_stack[-1]
@@ -164,6 +177,30 @@ def create_canvas(path, parent):
             refresh_figure(xlim=canvas.xlim_stack[-1], canvas=canvas)
             canvas.draw()
 
+    def on_release_on_spectrum_axes(event, canvas, interval):
+        if interval > 150:
+            return
+
+        if event.button in [MouseButton.LEFT, MouseButton.RIGHT] and event.xdata != None:
+            canvas.spectrum_log = not canvas.spectrum_log
+            refresh_figure(canvas=canvas)
+            canvas.draw()
+
+    on_release_handle = {
+        "signal": on_release_on_signal_axes,
+        "spectrum": on_release_on_spectrum_axes,
+    }
+
+    def on_release(event, canvas):
+        interval = canvas.tictoc.toc()
+        ax_name = find_current_axes_name(event.inaxes, canvas)
+        if not ax_name:
+            return
+        if not ax_name.split("-")[0] in on_release_handle:
+            return
+
+        on_release_handle[ax_name.split("-")[0]](event, canvas, interval)
+
     plt.gcf().clear()
     refresh_figure()
     canvas = FigureCanvasTkAgg(plt.gcf(), master=parent)
@@ -173,7 +210,8 @@ def create_canvas(path, parent):
     canvas.tictoc = TicToc()
     canvas.tictoc.tic()
     canvas.spectrum = False
-    canvas.spectrogram = False
+    canvas.spectrum_log = False
+    refresh_figure(canvas=canvas)
 
     canvas.mpl_connect("button_press_event", lambda event: on_press(event, canvas))
     canvas.mpl_connect("button_release_event", lambda event: on_release(event, canvas))
@@ -184,7 +222,7 @@ def create_canvas(path, parent):
         refresh_figure(canvas=canvas)
         canvas.draw()
 
-    funcs = Checkbar(parent=parent, picks=["spectrum", "spectrogram"], command=config_changed)
+    funcs = Checkbar(parent=parent, picks=["spectrum"], command=config_changed)
     funcs.pack(side=tk.BOTTOM)
 
     return canvas
